@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reminder Web Tool</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- User Guide:
+    - Open this file in a modern browser.
+    - Grant notification permission when prompted.
+    - Add reminders using the form: enter title, time (HH:MM via picker), optional description, select timezone.
+    - Reminders are stored locally and persist across reloads.
+    - Notifications and audio alerts trigger when reminders are due.
+    - Manage reminders: edit, delete, mark as completed.
+    - Snooze options available via UI buttons when due.
+    - Toggle language between English and Turkish.
+    - Mute/unmute audio alerts.
+    - Responsive design for mobile and desktop.
+    - Keyboard navigation supported with ARIA labels.
+    -->
+</head>
+<body class="bg-gray-100 font-sans">
+    <div class="container mx-auto p-4 max-w-2xl">
+        <header class="mb-4 flex justify-between items-center">
+            <h1 id="app-title" class="text-2xl font-bold">Reminder Web Tool</h1>
+            <div class="flex space-x-2">
+                <select id="language-toggle" class="border p-1 rounded">
+                    <option value="en">English</option>
+                    <option value="tr">Türkçe</option>
+                </select>
+                <label class="flex items-center">
+                    <input id="mute-toggle" type="checkbox" class="mr-1">
+                    <span id="mute-label">Mute Alerts</span>
+                </label>
+            </div>
+        </header>
+        
+        <form id="reminder-form" class="bg-white p-4 rounded shadow mb-4">
+            <input type="hidden" id="edit-id">
+            <div class="mb-2">
+                <label for="title" id="title-label" class="block">Title:</label>
+                <input type="text" id="title" class="border p-2 w-full" aria-required="true">
+            </div>
+            <div class="mb-2">
+                <label for="time" id="time-label" class="block">Time:</label>
+                <input type="time" id="time" class="border p-2 w-full" aria-required="true">
+            </div>
+            <div class="mb-2">
+                <label for="description" id="description-label" class="block">Description (optional):</label>
+                <textarea id="description" class="border p-2 w-full"></textarea>
+            </div>
+            <div class="mb-2">
+                <label for="timezone" id="timezone-label" class="block">Timezone:</label>
+                <select id="timezone" class="border p-2 w-full">
+                    <!-- Options populated by JS -->
+                </select>
+            </div>
+            <button type="submit" id="add-button" class="bg-blue-500 text-white p-2 rounded">Add Reminder</button>
+        </form>
+        
+        <ul id="reminder-list" class="space-y-4"></ul>
+    </div>
+
+    <script>
+        // Translations
+        const translations = {
+            en: {
+                appTitle: 'Reminder Web Tool',
+                muteLabel: 'Mute Alerts',
+                titleLabel: 'Title:',
+                timeLabel: 'Time:',
+                descriptionLabel: 'Description (optional):',
+                timezoneLabel: 'Timezone:',
+                addButton: 'Add Reminder',
+                updateButton: 'Update Reminder',
+                editButton: 'Edit',
+                deleteButton: 'Delete',
+                completeButton: 'Mark Completed',
+                snooze5: 'Snooze 5 min',
+                snooze10: 'Snooze 10 min',
+                upcoming: 'Upcoming',
+                due: 'Due',
+                overdue: 'Overdue',
+                completed: 'Completed',
+                invalidInput: 'Please enter a valid title and time (HH:MM).',
+                error: 'An error occurred while adding the reminder.'
+            },
+            tr: {
+                appTitle: 'Hatırlatma Web Aracı',
+                muteLabel: 'Uyarıları Sessize Al',
+                titleLabel: 'Başlık:',
+                timeLabel: 'Saat:',
+                descriptionLabel: 'Açıklama (isteğe bağlı):',
+                timezoneLabel: 'Saat Dilimi:',
+                addButton: 'Hatırlatma Ekle',
+                updateButton: 'Hatırlatmayı Güncelle',
+                editButton: 'Düzenle',
+                deleteButton: 'Sil',
+                completeButton: 'Tamamlandı Olarak İşaretle',
+                snooze5: '5 dk Ertele',
+                snooze10: '10 dk Ertele',
+                upcoming: 'Yaklaşan',
+                due: 'Zamanı Gelen',
+                overdue: 'Gecikmiş',
+                completed: 'Tamamlanmış',
+                invalidInput: 'Lütfen geçerli bir başlık ve saat (SS:DD) girin.',
+                error: 'Hatırlatma eklenirken bir hata oluştu.'
+            }
+        };
+
+        // Common timezones
+        let timezones = [
+            'UTC',
+            'America/New_York',
+            'America/Los_Angeles',
+            'Europe/London',
+            'Europe/Paris',
+            'Asia/Tokyo',
+            'Asia/Istanbul',
+            'Australia/Sydney'
+        ];
+
+        // Local timezone
+        const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+        if (!timezones.includes(localTimezone)) {
+            timezones.unshift(localTimezone);
+        }
+
+        // Audio alert
+        const alertAudio = new Audio('https://www.soundjay.com/buttons/beep-07a.mp3');
+
+        // State
+        let reminders = JSON.parse(localStorage.getItem('reminders')) || [];
+        let nextId = parseInt(localStorage.getItem('nextId')) || 0;
+        let currentLang = localStorage.getItem('lang') || 'en';
+        let isMuted = localStorage.getItem('muted') === 'true';
+
+        // Functions
+        function saveData() {
+            try {
+                localStorage.setItem('reminders', JSON.stringify(reminders));
+                localStorage.setItem('nextId', nextId);
+                localStorage.setItem('lang', currentLang);
+                localStorage.setItem('muted', isMuted);
+            } catch (e) {
+                console.error('Error saving data:', e);
+            }
+        }
+
+        function getDateComponents(str) {
+            try {
+                const [datePart, timePart] = str.split(', ');
+                const [month, day, year] = datePart.split('/');
+                const [hour, minute, second = '00'] = timePart ? timePart.split(':') : [0, 0, 0];
+                return {
+                    year: parseInt(year),
+                    month: parseInt(month),
+                    day: parseInt(day),
+                    hour: parseInt(hour),
+                    minute: parseInt(minute),
+                    second: parseInt(second)
+                };
+            } catch (e) {
+                console.error('Error in getDateComponents:', e);
+                return null;
+            }
+        }
+
+        function getUtcMs(components) {
+            try {
+                return Date.UTC(components.year, components.month - 1, components.day, components.hour, components.minute, components.second);
+            } catch (e) {
+                console.error('Error in getUtcMs:', e);
+                return NaN;
+            }
+        }
+
+        function getTimezoneOffsetMinutes(timeZone, date = new Date()) {
+            try {
+                const utcStr = date.toLocaleString('en-US', { timeZone: 'UTC', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false });
+                const tzStr = date.toLocaleString('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false });
+                const utcComponents = getDateComponents(utcStr);
+                const tzComponents = getDateComponents(tzStr);
+                if (!utcComponents || !tzComponents) return 0;
+                const utcMs = getUtcMs(utcComponents);
+                const tzMs = getUtcMs(tzComponents);
+                return (tzMs - utcMs) / 60000;
+            } catch (e) {
+                console.error('Error in getTimezoneOffsetMinutes:', e);
+                return 0;
+            }
+        }
+
+        function createUtcTime(hh, mm, timeZone) {
+            try {
+                const now = new Date();
+                const tzDateStr = now.toLocaleString('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric' });
+                const [month, day, year] = tzDateStr.split('/').map(s => s.trim());
+                const components = {
+                    year: parseInt(year),
+                    month: parseInt(month),
+                    day: parseInt(day),
+                    hour: parseInt(hh),
+                    minute: parseInt(mm),
+                    second: 0
+                };
+                const localParsedMs = getUtcMs(components);
+                if (isNaN(localParsedMs)) throw new Error('Invalid UTC time calculation');
+                const offsetMin = getTimezoneOffsetMinutes(timeZone, now);
+                return localParsedMs - offsetMin * 60000;
+            } catch (e) {
+                console.error('Error in createUtcTime:', e);
+                return NaN;
+            }
+        }
+
+        function getDisplayTime(utcMs, timeZone) {
+            try {
+                if (isNaN(utcMs)) return 'Invalid Time';
+                return new Date(utcMs).toLocaleTimeString('en-US', {
+                    timeZone,
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false
+                });
+            } catch (e) {
+                console.error('Error in getDisplayTime:', e);
+                return 'Invalid Time';
+            }
+        }
+
+        function getStatus(reminder, now) {
+            if (reminder.status === 'completed') return 'completed';
+            if (now >= reminder.utcTime) return 'due';
+            return 'upcoming';
+        }
+
+        function renderReminders() {
+            try {
+                const list = document.getElementById('reminder-list');
+                list.innerHTML = '';
+                const now = Date.now();
+                reminders.sort((a, b) => a.utcTime - b.utcTime);
+                reminders.forEach(rem => {
+                    const status = getStatus(rem, now);
+                    let color = 'bg-green-100';
+                    if (status === 'due') color = 'bg-red-100';
+                    if (status === 'completed') color = 'bg-gray-100';
+
+                    const li = document.createElement('li');
+                    li.className = `p-4 rounded shadow ${color}`;
+                    li.innerHTML = `
+                        <div class="flex justify-between items-start">
+                            <div>
+                                <h3 class="font-bold">${rem.title}</h3>
+                                <p>${getDisplayTime(rem.utcTime, rem.timeZone)} (${rem.timeZone}) - ${translations[currentLang][status]}</p>
+                                ${rem.desc ? `<p>${rem.desc}</p>` : ''}
+                            </div>
+                            <div class="space-x-2">
+                                <button onclick="editReminder(${rem.id})" class="bg-yellow-500 text-white px-2 py-1 rounded" aria-label="${translations[currentLang].editButton}">${translations[currentLang].editButton}</button>
+                                <button onclick="deleteReminder(${rem.id})" class="bg-red-500 text-white px-2 py-1 rounded" aria-label="${translations[currentLang].deleteButton}">${translations[currentLang].deleteButton}</button>
+                                <button onclick="completeReminder(${rem.id})" class="bg-green-500 text-white px-2 py-1 rounded" aria-label="${translations[currentLang].completeButton}">${translations[currentLang].completeButton}</button>
+                                ${status === 'due' ? `
+                                    <button onclick="snoozeReminder(${rem.id}, 5)" class="bg-blue-500 text-white px-2 py-1 rounded" aria-label="${translations[currentLang].snooze5}">${translations[currentLang].snooze5}</button>
+                                    <button onclick="snoozeReminder(${rem.id}, 10)" class="bg-blue-500 text-white px-2 py-1 rounded" aria-label="${translations[currentLang].snooze10}">${translations[currentLang].snooze10}</button>
+                                ` : ''}
+                            </div>
+                        </div>
+                    `;
+                    list.appendChild(li);
+                });
+            } catch (e) {
+                console.error('Error in renderReminders:', e);
+            }
+        }
+
+        function addOrUpdateReminder(e) {
+            e.preventDefault();
+            console.log('addOrUpdateReminder triggered');
+            try {
+                const id = document.getElementById('edit-id').value;
+                const title = document.getElementById('title').value.trim();
+                const time = document.getElementById('time').value;
+                const desc = document.getElementById('description').value.trim();
+                const timeZone = document.getElementById('timezone').value;
+
+                console.log('Inputs:', { title, time, desc, timeZone });
+
+                // Normalize time input (ensure HH:MM format)
+                let normalizedTime = time;
+                if (time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+                    const [h, m] = time.split(':').map(Number);
+                    if (!isNaN(h) && !isNaN(m)) {
+                        normalizedTime = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+                    }
+                }
+
+                if (!title) {
+                    alert(translations[currentLang].invalidInput + ' (Missing title)');
+                    return;
+                }
+                if (!time || !/^([01]\d|2[0-3]):[0-5]\d$/.test(normalizedTime)) {
+                    alert(translations[currentLang].invalidInput + ' (Invalid time format)');
+                    return;
+                }
+                if (!timeZone) {
+                    alert(translations[currentLang].invalidInput + ' (Missing timezone)');
+                    return;
+                }
+
+                const [hh, mm] = normalizedTime.split(':');
+
+                const utcTime = createUtcTime(hh, mm, timeZone);
+                if (isNaN(utcTime)) {
+                    alert(translations[currentLang].error);
+                    return;
+                }
+
+                if (id) {
+                    const rem = reminders.find(r => r.id == id);
+                    if (rem) {
+                        rem.title = title;
+                        rem.desc = desc;
+                        rem.utcTime = utcTime;
+                        rem.timeZone = timeZone;
+                        rem.triggered = false;
+                        rem.status = 'upcoming';
+                    }
+                } else {
+                    reminders.push({
+                        id: nextId++,
+                        title,
+                        desc,
+                        utcTime,
+                        timeZone,
+                        status: 'upcoming',
+                        triggered: false
+                    });
+                }
+
+                saveData();
+                renderReminders();
+                resetForm();
+            } catch (e) {
+                console.error('Error in addOrUpdateReminder:', e);
+                alert(translations[currentLang].error);
+            }
+        }
+
+        function resetForm() {
+            try {
+                document.getElementById('reminder-form').reset();
+                document.getElementById('edit-id').value = '';
+                document.getElementById('add-button').textContent = translations[currentLang].addButton;
+                document.getElementById('timezone').value = localTimezone;
+            } catch (e) {
+                console.error('Error in resetForm:', e);
+            }
+        }
+
+        function editReminder(id) {
+            try {
+                const rem = reminders.find(r => r.id === id);
+                if (rem) {
+                    document.getElementById('edit-id').value = id;
+                    document.getElementById('title').value = rem.title;
+                    document.getElementById('description').value = rem.desc;
+                    const displayTime = getDisplayTime(rem.utcTime, rem.timeZone);
+                    document.getElementById('time').value = displayTime;
+                    document.getElementById('timezone').value = rem.timeZone;
+                    document.getElementById('add-button').textContent = translations[currentLang].updateButton;
+                }
+            } catch (e) {
+                console.error('Error in editReminder:', e);
+            }
+        }
+
+        function deleteReminder(id) {
+            try {
+                reminders = reminders.filter(r => r.id !== id);
+                saveData();
+                renderReminders();
+            } catch (e) {
+                console.error('Error in deleteReminder:', e);
+            }
+        }
+
+        function completeReminder(id) {
+            try {
+                const rem = reminders.find(r => r.id === id);
+                if (rem) {
+                    rem.status = 'completed';
+                    rem.triggered = true;
+                    saveData();
+                    renderReminders();
+                }
+            } catch (e) {
+                console.error('Error in completeReminder:', e);
+            }
+        }
+
+        function snoozeReminder(id, minutes) {
+            try {
+                const rem = reminders.find(r => r.id === id);
+                if (rem) {
+                    rem.utcTime += minutes * 60000;
+                    rem.triggered = false;
+                    rem.status = 'upcoming';
+                    saveData();
+                    renderReminders();
+                }
+            } catch (e) {
+                console.error('Error in snoozeReminder:', e);
+            }
+        }
+
+        function checkReminders() {
+            try {
+                const now = Date.now();
+                reminders.forEach(rem => {
+                    if (now >= rem.utcTime && !rem.triggered && rem.status !== 'completed') {
+                        rem.triggered = true;
+                        rem.status = 'due';
+                        showNotification(rem);
+                        if (!isMuted) {
+                            alertAudio.play().catch(e => console.error('Error playing audio:', e));
+                        }
+                    }
+                });
+                saveData();
+                renderReminders();
+            } catch (e) {
+                console.error('Error in checkReminders:', e);
+            }
+        }
+
+        function showNotification(rem) {
+            try {
+                if (Notification.permission === 'granted') {
+                    const notif = new Notification(`Reminder: ${rem.title}`, {
+                        body: rem.desc || 'Your reminder is due!',
+                        data: { id: rem.id }
+                    });
+                    notif.onclick = () => {
+                        // Handle click if needed
+                    };
+                }
+            } catch (e) {
+                console.error('Error in showNotification:', e);
+            }
+        }
+
+        function updateLanguage() {
+            try {
+                const trans = translations[currentLang];
+                document.getElementById('app-title').textContent = trans.appTitle;
+                document.getElementById('mute-label').textContent = trans.muteLabel;
+                document.getElementById('title-label').textContent = trans.titleLabel;
+                document.getElementById('time-label').textContent = trans.timeLabel;
+                document.getElementById('description-label').textContent = trans.descriptionLabel;
+                document.getElementById('timezone-label').textContent = trans.timezoneLabel;
+                document.getElementById('add-button').textContent = trans.addButton;
+                renderReminders();
+            } catch (e) {
+                console.error('Error in updateLanguage:', e);
+            }
+        }
+
+        // Init
+        try {
+            document.getElementById('language-toggle').value = currentLang;
+            document.getElementById('mute-toggle').checked = isMuted;
+            timezones.forEach(tz => {
+                const opt = document.createElement('option');
+                opt.value = tz;
+                opt.textContent = tz;
+                if (tz === localTimezone) opt.selected = true;
+                document.getElementById('timezone').appendChild(opt);
+            });
+
+            document.getElementById('reminder-form').addEventListener('submit', addOrUpdateReminder);
+            // Fallback for button click
+            document.getElementById('add-button').addEventListener('click', () => {
+                console.log('Add button clicked');
+                document.getElementById('reminder-form').dispatchEvent(new Event('submit', { cancelable: true }));
+            });
+            document.getElementById('language-toggle').addEventListener('change', (e) => {
+                currentLang = e.target.value;
+                saveData();
+                updateLanguage();
+            });
+            document.getElementById('mute-toggle').addEventListener('change', (e) => {
+                isMuted = e.target.checked;
+                saveData();
+            });
+
+            if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
+                Notification.requestPermission().catch(e => console.error('Error requesting notification permission:', e));
+            }
+
+            updateLanguage();
+            renderReminders();
+            setInterval(checkReminders, 60000);
+            checkReminders(); // Initial check
+        } catch (e) {
+            console.error('Error in initialization:', e);
+            alert(translations[currentLang].error);
+        }
+    </script>
+</body>
+</html>
